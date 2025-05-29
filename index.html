@@ -1,0 +1,332 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>Mario-Style 3D Kart Game Prototype</title>
+<style>
+  body, html { margin: 0; overflow: hidden; background: #87ceeb; font-family: Arial, sans-serif; }
+  #overlay {
+    position: absolute; top: 10px; left: 50%; transform: translateX(-50%);
+    background: rgba(0,0,0,0.6); color: white; padding: 10px 20px;
+    border-radius: 10px; text-align: center;
+    z-index: 10;
+    user-select: none;
+  }
+  #charSelect {
+    position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+    background: rgba(255,255,255,0.9); padding: 20px;
+    border-radius: 12px;
+    display: flex; gap: 15px;
+    z-index: 20;
+  }
+  .charBox {
+    width: 80px; height: 80px; border-radius: 12px; cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+    font-weight: bold; font-size: 16px; color: white;
+    user-select: none;
+    box-shadow: 0 0 8px rgba(0,0,0,0.3);
+    transition: transform 0.2s ease;
+  }
+  .charBox:hover {
+    transform: scale(1.1);
+  }
+  #startBtn {
+    margin-top: 15px; padding: 8px 16px; font-size: 16px;
+    border: none; border-radius: 8px;
+    cursor: pointer; background: #2ecc71; color: white;
+    font-weight: bold;
+  }
+  #startBtn:disabled {
+    background: #95a5a6;
+    cursor: not-allowed;
+  }
+</style>
+</head>
+<body>
+
+<div id="overlay">Use Arrow Keys to Drive. Press R to Restart Race.</div>
+
+<div id="charSelect">
+  <div class="charBox" style="background:#e74c3c;" data-color="#e74c3c">Red</div>
+  <div class="charBox" style="background:#3498db;" data-color="#3498db">Blue</div>
+  <div class="charBox" style="background:#f1c40f; color:#333;" data-color="#f1c40f">Yellow</div>
+  <div class="charBox" style="background:#2ecc71;" data-color="#2ecc71">Green</div>
+  <button id="startBtn" disabled>Start Race</button>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/three@0.154.0/build/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.154.0/examples/js/controls/OrbitControls.js"></script>
+<script>
+  // Basic setup
+  let scene, camera, renderer;
+  let playerKart, aiKarts = [];
+  let track;
+  let clock = new THREE.Clock();
+
+  // Player control state
+  let keys = { ArrowUp: false, ArrowDown: false, ArrowLeft: false, ArrowRight: false };
+  let speed = 0, maxSpeed = 0.18, acceleration = 0.006, deceleration = 0.01;
+  let steerAngle = 0, maxSteerAngle = 0.035;
+
+  // Race state
+  let raceStarted = false;
+  let lapsCompleted = 0;
+  const totalLaps = 3;
+
+  // Character selection
+  const charBoxes = document.querySelectorAll('.charBox');
+  const startBtn = document.getElementById('startBtn');
+  let selectedColor = null;
+
+  charBoxes.forEach(box => {
+    box.addEventListener('click', () => {
+      selectedColor = box.getAttribute('data-color');
+      charBoxes.forEach(b => b.style.outline = '');
+      box.style.outline = '3px solid white';
+      startBtn.disabled = false;
+    });
+  });
+
+  startBtn.addEventListener('click', () => {
+    document.getElementById('charSelect').style.display = 'none';
+    init();
+    animate();
+    raceStarted = true;
+  });
+
+  // Initialize Three.js scene
+  function init() {
+    scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x87ceeb);
+
+    camera = new THREE.PerspectiveCamera(75, window.innerWidth/window.innerHeight, 0.1, 1000);
+    camera.position.set(0, 5, 12);
+
+    renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    document.body.appendChild(renderer.domElement);
+
+    // Lighting
+    const ambient = new THREE.AmbientLight(0xffffff, 0.7);
+    scene.add(ambient);
+    const directional = new THREE.DirectionalLight(0xffffff, 0.7);
+    directional.position.set(10, 20, 10);
+    scene.add(directional);
+
+    // Track: simple oval made of curve points, and ground plane
+    createTrack();
+
+    // Player kart
+    playerKart = createKart(selectedColor || '#e74c3c');
+    playerKart.position.set(0, 0.3, 0);
+    scene.add(playerKart);
+
+    // AI Karts - 3 opponents with different colors and start positions
+    const aiColors = ['#3498db', '#f1c40f', '#2ecc71'];
+    for(let i = 0; i < 3; i++){
+      let aiKart = createKart(aiColors[i]);
+      aiKart.position.set(-2 + i*2, 0.3, -4);
+      aiKart.userData = { progress: 0, speed: 0.12 + Math.random()*0.04 };
+      scene.add(aiKart);
+      aiKarts.push(aiKart);
+    }
+
+    window.addEventListener('resize', onWindowResize);
+    window.addEventListener('keydown', e => {
+      if(e.code in keys) keys[e.code] = true;
+      if(e.key.toLowerCase() === 'r') restartRace();
+    });
+    window.addEventListener('keyup', e => {
+      if(e.code in keys) keys[e.code] = false;
+    });
+  }
+
+  // Create a simple rounded kart model
+  function createKart(color) {
+    const group = new THREE.Group();
+
+    // Body
+    const bodyGeom = new THREE.BoxGeometry(1.4, 0.5, 2.4);
+    const bodyMat = new THREE.MeshStandardMaterial({ color, roughness: 0.6, metalness: 0.3 });
+    const body = new THREE.Mesh(bodyGeom, bodyMat);
+    body.position.y = 0.25;
+    group.add(body);
+
+    // Wheels (cylinders)
+    const wheelGeom = new THREE.CylinderGeometry(0.3, 0.3, 0.4, 16);
+    const wheelMat = new THREE.MeshStandardMaterial({ color: 0x222222, roughness: 0.8 });
+    const wheelPositions = [
+      [-0.6, 0,  0.9],
+      [ 0.6, 0,  0.9],
+      [-0.6, 0, -0.9],
+      [ 0.6, 0, -0.9],
+    ];
+    wheelPositions.forEach(pos => {
+      const wheel = new THREE.Mesh(wheelGeom, wheelMat);
+      wheel.rotation.z = Math.PI / 2;
+      wheel.position.set(...pos);
+      group.add(wheel);
+    });
+
+    // Simple "helmet" for character on kart
+    const helmetGeom = new THREE.SphereGeometry(0.3, 16, 16);
+    const helmetMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.4, metalness: 0.5 });
+    const helmet = new THREE.Mesh(helmetGeom, helmetMat);
+    helmet.position.set(0, 0.85, 0);
+    group.add(helmet);
+
+    return group;
+  }
+
+  // Create a simple oval track and place markers for AI pathing
+  let trackCurve, trackPoints;
+  function createTrack(){
+    // Ground plane
+    const groundGeom = new THREE.PlaneGeometry(50, 50);
+    const groundMat = new THREE.MeshStandardMaterial({ color: 0x339933 });
+    const ground = new THREE.Mesh(groundGeom, groundMat);
+    ground.rotation.x = -Math.PI/2;
+    scene.add(ground);
+
+    // Track shape using CatmullRomCurve3 for smooth looping path
+    trackPoints = [
+      new THREE.Vector3( 15, 0,  0),
+      new THREE.Vector3( 10, 0,  10),
+      new THREE.Vector3(  0, 0,  15),
+      new THREE.Vector3(-10, 0,  10),
+      new THREE.Vector3(-15, 0,  0),
+      new THREE.Vector3(-10, 0, -10),
+      new THREE.Vector3(  0, 0, -15),
+      new THREE.Vector3( 10, 0, -10),
+    ];
+    trackCurve = new THREE.CatmullRomCurve3(trackPoints, true);
+
+    // Draw track with a thick tube
+    const tubeGeom = new THREE.TubeGeometry(trackCurve, 200, 3, 8, true);
+    const tubeMat = new THREE.MeshStandardMaterial({ color: 0x555555, roughness: 0.9, metalness: 0.1 });
+    track = new THREE.Mesh(tubeGeom, tubeMat);
+    scene.add(track);
+
+    // Track border lines (white)
+    const borderMat = new THREE.LineBasicMaterial({ color: 0xffffff, linewidth: 3 });
+    const border1 = new THREE.Line(new THREE.BufferGeometry().setFromPoints(trackCurve.getPoints(200)), borderMat);
+    scene.add(border1);
+  }
+
+  // Player controls update
+  function updatePlayer(dt){
+    if(!raceStarted) return;
+
+    // Accelerate / Decelerate
+    if(keys.ArrowUp){
+      speed += acceleration;
+      if(speed > maxSpeed) speed = maxSpeed;
+    } else {
+      speed -= deceleration;
+      if(speed < 0) speed = 0;
+    }
+
+    if(keys.ArrowDown){
+      speed -= acceleration * 1.2;
+      if(speed < 0) speed = 0;
+    }
+
+    // Steering
+    if(keys.ArrowLeft){
+      steerAngle = Math.max(steerAngle - 0.0025, -maxSteerAngle);
+    } else if(keys.ArrowRight){
+      steerAngle = Math.min(steerAngle + 0.0025, maxSteerAngle);
+    } else {
+      if(steerAngle > 0){
+        steerAngle = Math.max(steerAngle - 0.003, 0);
+      } else if(steerAngle < 0){
+        steerAngle = Math.min(steerAngle + 0.003, 0);
+      }
+    }
+
+    // Update player rotation based on steer angle and speed
+    playerKart.rotation.y += steerAngle * speed * 8;
+
+    // Move forward in the direction the kart is facing
+    const forward = new THREE.Vector3(0, 0, -1);
+    forward.applyEuler(playerKart.rotation);
+    forward.multiplyScalar(speed);
+    playerKart.position.add(forward);
+
+    // Keep player on track area by clamping distance from center (rough check)
+    let distFromCenter = Math.sqrt(playerKart.position.x*playerKart.position.x + playerKart.position.z*playerKart.position.z);
+    if(distFromCenter > 14){
+      // Push back towards center slowly
+      playerKart.position.x *= 0.95;
+      playerKart.position.z *= 0.95;
+      speed *= 0.7;
+    }
+  }
+
+  // Simple AI: follow the track curve progress along it
+  function updateAI(dt){
+    aiKarts.forEach(ai => {
+      let progress = ai.userData.progress;
+
+      // Increase progress by ai speed
+      progress += ai.userData.speed * dt * 60;
+      if(progress > 1) progress -= 1;
+
+      ai.userData.progress = progress;
+
+      // Get position and tangent on track curve
+      const pos = trackCurve.getPointAt(progress);
+      const tangent = trackCurve.getTangentAt(progress);
+
+      ai.position.copy(pos);
+      ai.position.y = 0.3;
+
+      // Rotation to face tangent direction
+      const angle = Math.atan2(tangent.x, tangent.z);
+      ai.rotation.y = angle;
+
+    });
+  }
+
+  // Camera follows player
+  function updateCamera(){
+    const offset = new THREE.Vector3(0, 5, 12);
+    offset.applyEuler(playerKart.rotation);
+    const camPos = playerKart.position.clone().add(offset);
+    camera.position.lerp(camPos, 0.1);
+    camera.lookAt(playerKart.position);
+  }
+
+  function animate(){
+    requestAnimationFrame(animate);
+    const dt = clock.getDelta();
+
+    if(raceStarted){
+      updatePlayer(dt);
+      updateAI(dt);
+      updateCamera();
+    }
+
+    renderer.render(scene, camera);
+  }
+
+  function restartRace(){
+    if(!raceStarted) return;
+    playerKart.position.set(0, 0.3, 0);
+    playerKart.rotation.set(0, 0, 0);
+    speed = 0;
+    steerAngle = 0;
+
+    aiKarts.forEach((ai, i) => {
+      ai.userData.progress = i * 0.25;
+    });
+  }
+
+  function onWindowResize(){
+    camera.aspect = window.innerWidth/window.innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(window.innerWidth, window.innerHeight);
+  }
+</script>
+</body>
+</html>
